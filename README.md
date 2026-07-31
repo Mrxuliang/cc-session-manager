@@ -7,6 +7,8 @@
 > AI-distilled handoff summary, or hand-picked fragments — launched in
 > Claude Desktop (deep links) or Terminal.
 
+![screenshot](docs/screenshot.png)
+
 核心解决两件事：
 
 1. **精准管理**：扫描 `~/.claude/projects/*/*.jsonl`，按项目分组展示所有历史会话，
@@ -25,6 +27,18 @@
      复制成新 UUID（逐行改写 sessionId，原文件不动）后走 `claude://resume?session=<id>`
      导入，等效分叉。列表卡片上也有「Desktop ↗」按钮直接导入打开原会话。
    - **Terminal**：AppleScript 打开 Terminal 跑 `claude`，无长度限制。
+
+## 安装
+
+从 [Releases](https://github.com/Mrxuliang/cc-session-manager/releases) 下载 .dmg
+（Apple Silicon）。应用未签名，首次打开若被拦截：
+
+```bash
+xattr -cr /Applications/cc-session-manager.app
+```
+
+或对应用图标右键 → 打开。依赖本机已安装并登录的
+[Claude Code](https://claude.com/claude-code) CLI（蒸馏与启动会话用）。
 
 ## 开发
 
