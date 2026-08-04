@@ -350,11 +350,9 @@ fn build_transcript(sessions: &[(String, String)]) -> Result<String, String> {
 async fn generate_digest(sessions: Vec<(String, String)>) -> Result<String, String> {
     let transcript = build_transcript(&sessions)?;
     let prompt = "你会在标准输入收到一份或多份 Claude Code 历史会话的转写记录。请把它们蒸馏成一份交接摘要，作为新会话的背景上下文使用。要求：中文、Markdown 格式，依次包含：1) 任务背景与目标；2) 已完成的关键工作与重要决策（保留关键文件路径、命令、配置、服务器/端口等具体信息）；3) 踩过的坑与已验证的结论；4) 未完成事项与建议的下一步。只输出摘要本身，不要任何额外说明。";
-    let mut child = Command::new("/bin/zsh")
-        .args([
-            "-lc",
-            &format!("claude -p --no-session-persistence {}", shell_quote(prompt)),
-        ])
+    let claude = find_claude()?;
+    let mut child = Command::new(&claude)
+        .args(["-p", "--no-session-persistence", prompt])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -367,13 +365,19 @@ async fn generate_digest(sessions: Vec<(String, String)>) -> Result<String, Stri
             .map_err(|e| e.to_string())?;
     }
     let out = child.wait_with_output().map_err(|e| e.to_string())?;
-    if !out.status.success() {
-        return Err(format!(
-            "claude -p 失败: {}",
-            String::from_utf8_lossy(&out.stderr)
-        ));
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    if stdout.contains("Not logged in") || stderr.contains("Not logged in") {
+        return Err(
+            "Claude Code CLI 未登录（Desktop 应用的登录态与 CLI 是分开的）。\
+             请打开 Terminal 运行 claude，输入 /login 完成一次登录后重试。"
+                .into(),
+        );
     }
-    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if !out.status.success() {
+        return Err(format!("claude -p 失败: {}", stderr));
+    }
+    let s = stdout.trim().to_string();
     if s.is_empty() {
         return Err("claude 返回了空摘要".into());
     }
@@ -382,6 +386,31 @@ async fn generate_digest(sessions: Vec<(String, String)>) -> Result<String, Stri
 
 fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// GUI 应用不继承终端 PATH，按常见安装位置探测 claude CLI 的绝对路径
+fn find_claude() -> Result<String, String> {
+    let mut candidates: Vec<PathBuf> = vec![
+        home().join(".local/bin/claude"),
+        PathBuf::from("/opt/homebrew/bin/claude"),
+        PathBuf::from("/usr/local/bin/claude"),
+        home().join(".claude/local/claude"),
+        home().join(".npm-global/bin/claude"),
+    ];
+    if let Ok(out) = Command::new("/bin/zsh").args(["-lc", "which claude"]).output() {
+        if out.status.success() {
+            let p = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if !p.is_empty() {
+                candidates.insert(0, PathBuf::from(p));
+            }
+        }
+    }
+    for c in &candidates {
+        if c.is_file() {
+            return Ok(c.to_string_lossy().to_string());
+        }
+    }
+    Err("找不到 claude 命令。请确认已安装 Claude Code CLI（常见位置 ~/.local/bin/claude）。".into())
 }
 
 fn percent_encode(s: &str) -> String {
@@ -506,10 +535,12 @@ async fn launch_session(cwd: String, mode: String, arg: String) -> Result<(), St
     } else {
         format!("cd {} 2>/dev/null\n", shell_quote(&cwd))
     };
+    let claude = shell_quote(&find_claude()?);
     let body = match mode.as_str() {
         "fork" => format!(
-            "#!/bin/zsh\n{}exec claude --resume {} --fork-session\n",
+            "#!/bin/zsh\n{}exec {} --resume {} --fork-session\n",
             cd,
+            claude,
             shell_quote(&arg)
         ),
         "prompt" => {
@@ -522,12 +553,13 @@ async fn launch_session(cwd: String, mode: String, arg: String) -> Result<(), St
             let pf = dir.join(format!("handoff-{}.md", ms));
             fs::write(&pf, &arg).map_err(|e| e.to_string())?;
             format!(
-                "#!/bin/zsh\n{}exec claude \"$(cat {})\"\n",
+                "#!/bin/zsh\n{}exec {} \"$(cat {})\"\n",
                 cd,
+                claude,
                 shell_quote(&pf.to_string_lossy())
             )
         }
-        _ => format!("#!/bin/zsh\n{}exec claude\n", cd),
+        _ => format!("#!/bin/zsh\n{}exec {}\n", cd, claude),
     };
     run_in_terminal(&body)
 }
